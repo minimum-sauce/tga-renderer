@@ -1,12 +1,16 @@
-const std = @import("std");
-var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-const File = std.fs.File;
-const writePackedInt = std.mem.writePackedInt;
-const readPackedInt = std.mem.readPackedInt;
-const endian = std.builtin.Endian.little;
+const debug_print = @import("std").debug.print;
+var gpa = @import("std").heap.GeneralPurposeAllocator(.{}){};
+const fs_cwd = @import("std").fs.cwd;
+const mem_swap = @import("std").mem.swap;
+const File = @import("std").fs.File;
+const writePackedInt = @import("std").mem.writePackedInt;
+const readPackedInt = @import("std").mem.readPackedInt;
+const bitReader = @import("std").io.bitReader;
+const bitWriter = @import("std").io.bitWriter;
+const BitWriter = @import("std").io.BitWriter;
+const endian = @import("std").builtin.Endian.little;
 
-pub const Format = enum(u8) { GRAYSCALE = 1, RGB = 3, RGBA = 4 };
-//pub const DataTypeCode = enum(u8) { NO_DATA = 0, UNCOMPRESSED_COLOR_MAPPED = 1, UNCOMPRESSED_RGB = 2, UNCOMPRESSED_GRAYSCALE = 3, RUNLENGTH_ENCODED_RGB = 9, COMPRESSED_GRAYSCALE = 10 };
+pub const Format = enum(u8) { GRAYSCALE = 1, BRG = 3, BRGA = 4 };
 
 const TGAHeader = packed struct {
     const Self = @This();
@@ -42,10 +46,11 @@ const TGAHeader = packed struct {
         writePackedInt(u16, arr_header[14..16], 0, header.height, endian);
         arr_header[16] = header.bitsperpixel;
         arr_header[17] = header.imageDescriptor;
-        std.debug.print("serialized header: ", .{});
+        debug_print("serialized header: ", .{});
         for (arr_header) |byte| {
-            std.debug.print(" {b} ", .{byte});
+            debug_print(" {b} ", .{byte});
         }
+        debug_print("\n", .{});
         return arr_header;
     }
     fn deserialize(self: Self, serialized_header: [18]u8) void {
@@ -72,7 +77,7 @@ pub const TGAColor = struct {
     bytesPerPixel: u8 = 4,
 
     pub fn Print(self: Self) void {
-        std.debug.print("[B: {d}, G: {d}, R: {d}, A: {d}]\n", .{ self.bgra[0], self.bgra[1], self.bgra[2], self.bgra[3] });
+        debug_print("[B: {d}, G: {d}, R: {d}, A: {d}]\n", .{ self.bgra[0], self.bgra[1], self.bgra[2], self.bgra[3] });
     }
 };
 
@@ -91,36 +96,36 @@ pub fn TGAImage(comptime width: u16, comptime height: u16, comptime pixel: TGACo
         }
 
         pub fn readTgaFile(self: *Self, fileName: [:0]const u8) bool {
-            const image = std.fs.cwd().openFile(fileName, .{}) catch |err| {
-                std.debug.print("unable to open file: error '{d}'", .{@intFromError(err)});
+            const image = fs_cwd().openFile(fileName, .{}) catch |err| {
+                debug_print("unable to open file: error '{d}'", .{@intFromError(err)});
                 unreachable;
             };
             defer image.close();
 
-            var r = std.io.bitReader(endian, image.reader());
+            var r = bitReader(endian, image.reader());
             var reader = r.reader();
 
             var header = TGAHeader{};
 
             _ = reader.readAll(@as([*]u8, @ptrCast(&header))[0..18]) catch unreachable;
-            std.debug.print("'{s}', data_type_code: {d}\n", .{ @as([*]u8, @ptrCast(&header))[0..@sizeOf(TGAHeader)], header.dataTypeCode });
+            debug_print("'{s}', data_type_code: {d}\n", .{ @as([*]u8, @ptrCast(&header))[0..@sizeOf(TGAHeader)], header.dataTypeCode });
 
-            std.debug.print("header width: {d}, height: {d}, bpp: {d}\n", .{ header.width, header.height, header.bitsperpixel >> 3 });
+            debug_print("header width: {d}, height: {d}, bpp: {d}\n", .{ header.width, header.height, header.bitsperpixel >> 3 });
             self.width = header.width;
             self.height = header.height;
             self.bitsPerPixel = header.bitsperpixel >> 3;
 
             if (self.width <= 0 or self.height <= 0) {
-                std.debug.print("bad width/height value\n", .{});
+                debug_print("bad width/height value\n", .{});
                 return false;
             }
 
             switch (self.bitsPerPixel) {
                 @intFromEnum(Format.GRAYSCALE) => {},
-                @intFromEnum(Format.RGB) => {},
-                @intFromEnum(Format.RGBA) => {},
+                @intFromEnum(Format.BRG) => {},
+                @intFromEnum(Format.BRGA) => {},
                 else => {
-                    std.debug.print("bad Bits Per Pixel (format) value\n", .{});
+                    debug_print("bad Bits Per Pixel (format) value\n", .{});
                     return false;
                 },
             }
@@ -128,60 +133,64 @@ pub fn TGAImage(comptime width: u16, comptime height: u16, comptime pixel: TGACo
             if (header.dataTypeCode == 2 or header.dataTypeCode == 3) {
                 _ = reader.readAll(&self.data) catch unreachable;
             } else if (header.dataTypeCode == 10 or header.dataTypeCode == 11) {
-                if (self.loadRleData(image)) {
-                    std.debug.print("an error occured while reading the data\n", .{});
+                if (!self.loadRleData(image)) {
+                    debug_print("an error occured while reading the data\n", .{});
                     return false;
                 }
             } else {
-                std.debug.print("Error: unknown file format {d}\n", .{header.dataTypeCode});
+                debug_print("Error: unknown file format {d}\n", .{header.dataTypeCode});
                 return false;
             }
 
             return true;
         }
 
-        pub fn loadRleData(self: *Self, file: std.fs.File) bool {
+        pub fn loadRleData(self: *Self, file: File) bool {
+            var r = bitReader(endian, file.reader());
+            var reader = r.reader();
             const pixelCount: u64 = self.width * self.height;
             var currentPixel: u64 = 0;
             var currentByte: u64 = 0;
             var colorBuffer = TGAColor{};
 
-            while (currentPixel < pixelCount) : (currentPixel += 1) {
+            while (currentPixel < pixelCount) {
                 var chunkHeader: u8 = 0;
-                _ = file.readAll(@as([*]u8, @ptrCast(&chunkHeader))[0..1]) catch unreachable;
+                _ = reader.readAll(@as([*]u8, @ptrCast(&chunkHeader))[0..1]) catch unreachable;
                 if (chunkHeader == 0) {
-                    std.debug.print("an error has occured while reading the data \n", .{});
+                    debug_print("an error has occured while reading the data \n", .{});
                     return false;
                 }
                 if (chunkHeader < 128) {
                     chunkHeader += 1;
                     var i: u32 = 0;
                     while (i < chunkHeader) : (i += 1) {
-                        _ = file.readAll(@as([*]u8, &colorBuffer.bgra)[0..self.bitsPerPixel]) catch unreachable;
-                    }
+                        _ = reader.readAll(@as([*]u8, &colorBuffer.bgra)[0..self.bitsPerPixel]) catch unreachable;
 
-                    for (colorBuffer.bgra[0..self.bitsPerPixel]) |color| {
-                        self.data[currentByte] = color;
-                        currentByte += 1;
-                    }
-                    if (currentPixel >= pixelCount) {
-                        std.debug.print("Too many pixels read", .{});
-                        return false;
+                        for (colorBuffer.bgra[0..self.bitsPerPixel]) |color| {
+                            self.data[currentByte] = color;
+                            currentByte += 1;
+                        }
+                        currentPixel += 1;
+                        if (currentPixel >= pixelCount) {
+                            debug_print("Too many pixels read", .{});
+                            return false;
+                        }
                     }
                 } else {
                     chunkHeader -= 127;
                     var i: u32 = 0;
                     while (i < chunkHeader) : (i += 1) {
-                        _ = file.readAll(@as([*]u8, &colorBuffer.bgra)[0..self.bitsPerPixel]) catch unreachable;
-                    }
+                        _ = reader.readAll(@as([*]u8, &colorBuffer.bgra)[0..self.bitsPerPixel]) catch unreachable;
 
-                    for (colorBuffer.bgra[0..self.bitsPerPixel]) |color| {
-                        self.data[currentByte] = color;
-                        currentByte += 1;
-                    }
-                    if (currentPixel >= pixelCount) {
-                        std.debug.print("Too many pixels read", .{});
-                        return false;
+                        for (colorBuffer.bgra[0..self.bitsPerPixel]) |color| {
+                            self.data[currentByte] = color;
+                            currentByte += 1;
+                        }
+                        currentPixel += 1;
+                        if (currentPixel > pixelCount) {
+                            // debug_print("Too many pixels read\n", .{});
+                            return false;
+                        }
                     }
                 }
             }
@@ -193,13 +202,13 @@ pub fn TGAImage(comptime width: u16, comptime height: u16, comptime pixel: TGACo
             const extentionAreaRef: [4]u8 = .{ 0, 0, 0, 0 };
             const footer: [18:0]u8 = [18:0]u8{ 'T', 'R', 'U', 'E', 'V', 'I', 'S', 'I', 'O', 'N', '-', 'X', 'F', 'I', 'L', 'E', '.', 0 };
 
-            const image = std.fs.cwd().openFile(fileName, File.OpenFlags{ .mode = File.OpenMode.write_only }) catch |err| {
-                std.debug.print("unable to open file: '{s}'", .{@errorName(err)});
+            const image = fs_cwd().openFile(fileName, File.OpenFlags{ .mode = File.OpenMode.write_only }) catch {
+                // debug_print("unable to open file: '{s}'", .{@errorName(err)});
                 unreachable;
             };
             defer image.close();
             //var buffWriter = std.io.bufferedWriter(image.writer());
-            var w = std.io.bitWriter(endian, image.writer());
+            var w = bitWriter(endian, image.writer());
 
             var writer = w.writer();
 
@@ -221,13 +230,13 @@ pub fn TGAImage(comptime width: u16, comptime height: u16, comptime pixel: TGACo
             };
 
             _ = writer.write(header.serialize()[0..]) catch |err| {
-                std.debug.print("error: {s}", .{@errorName(err)});
+                debug_print("error: {s}", .{@errorName(err)});
             };
 
             if (!rle) {
                 writer.writeAll(self.data[0..]) catch unreachable;
             } else if (!self.unloadRleData(writer)) {
-                std.debug.print("can't dump the tga file\n", .{});
+                debug_print("can't dump the tga file\n", .{});
                 return false;
             }
             _ = writer.writeAll(developerAreaRef[0..]) catch unreachable;
@@ -237,24 +246,23 @@ pub fn TGAImage(comptime width: u16, comptime height: u16, comptime pixel: TGACo
             return true;
         }
 
-        pub fn unloadRleData(self: Self, writer: std.io.BitWriter(std.builtin.Endian.little, File.Writer).Writer) bool {
+        pub fn unloadRleData(self: Self, writer: BitWriter(endian, File.Writer).Writer) bool {
             const maxChunkLength: u8 = 128;
             const nPixels = self.width * self.height;
-            std.debug.print("\npixels: {d}\n", .{nPixels});
-            var val: u8 = 0;
+            // debug_print("\npixels: {d}\n", .{nPixels});
             var currentPixel: u32 = 0;
 
-            while (currentPixel < nPixels) : (currentPixel += 1) {
+            while (currentPixel < nPixels) { //: (currentPixel += 1) {
                 const chunkStart = currentPixel * self.bitsPerPixel;
                 var currentByte = currentPixel * self.bitsPerPixel;
                 var runLength: u8 = 1;
                 var raw = true;
 
-                while (currentPixel + runLength < nPixels and runLength < maxChunkLength) : (runLength += 1) {
+                while (currentPixel + runLength < nPixels and runLength < maxChunkLength) { //: (runLength += 1) {
                     var succ_eq = true;
                     var t: u32 = 0;
                     if (self.data[currentByte] != 0 or self.data[currentByte + 1] != 0 or self.data[currentByte + 2] != 0) {
-                        std.debug.print("[B: {d}, G: {d}, R:{d}]\n", .{ self.data[currentByte], self.data[currentByte + 1], self.data[currentByte + 2] });
+                        debug_print("[B: {d}, G: {d}, R:{d}]\n", .{ self.data[currentByte], self.data[currentByte + 1], self.data[currentByte + 2] });
                     }
 
                     while (succ_eq and t < self.bitsPerPixel) : (t += 1) {
@@ -264,9 +272,6 @@ pub fn TGAImage(comptime width: u16, comptime height: u16, comptime pixel: TGACo
                     if (runLength == 1) {
                         raw = !succ_eq;
                     }
-                    if (raw) {
-                        std.debug.print("red!\n", .{});
-                    }
                     if (raw and succ_eq) {
                         runLength -= 1;
                         break;
@@ -274,23 +279,23 @@ pub fn TGAImage(comptime width: u16, comptime height: u16, comptime pixel: TGACo
                     if (!raw and !succ_eq) {
                         break;
                     }
+                    runLength += 1;
                 }
                 currentPixel += runLength;
+                debug_print("raw value: {}\n", .{raw});
                 if (raw) {
                     const rl = runLength - 1;
-                    val += 1 + runLength * self.bitsPerPixel;
-                    std.debug.print("added 1 pixel!\n", .{});
+                    debug_print("added 1 pixel!\n", .{});
                     writer.writeByte(rl) catch unreachable;
+                    debug_print("chunc: \n{any}\n", .{self.data[chunkStart .. chunkStart + runLength * self.bitsPerPixel]});
                     writer.writeAll(self.data[chunkStart .. chunkStart + runLength * self.bitsPerPixel]) catch unreachable;
                 } else {
-                    val += 1 + self.bitsPerPixel;
-                    std.debug.print("added {d} bytes!\n", .{runLength});
+                    debug_print("added {d} bytes!\n", .{runLength});
                     const rl = runLength + 127;
                     writer.writeByte(rl) catch unreachable;
                     writer.writeAll(self.data[chunkStart .. chunkStart + self.bitsPerPixel]) catch unreachable;
                 }
             }
-            std.debug.print("total bytes: {d}\n", .{val});
             return true;
         }
 
@@ -311,6 +316,7 @@ pub fn TGAImage(comptime width: u16, comptime height: u16, comptime pixel: TGACo
             for (self.data[start .. start + self.bitsPerPixel], 0..) |*rgbValue, index| {
                 rgbValue.* = color.bgra[index];
             }
+            // debug_print("data after set: \n{any}\n\n", .{self.data});
         }
 
         pub fn flip_horizontally(self: *Self) void {
@@ -322,7 +328,7 @@ pub fn TGAImage(comptime width: u16, comptime height: u16, comptime pixel: TGACo
             while (w < half) : (w += 1) {
                 while (h < self.height) : (h += 1) {
                     while (b < self.bitsPerPixel) : (b += 1) {
-                        std.mem.swap(u8, &self.data[(w + h * self.width) * self.bitsPerPixel + b], &self.data.?[
+                        mem_swap(u8, &self.data[(w + h * self.width) * self.bitsPerPixel + b], &self.data.?[
                             (self.wdith - 1 - w + h * self.width) * self.bitsPerPixel + b
                         ]);
                     }
@@ -339,7 +345,7 @@ pub fn TGAImage(comptime width: u16, comptime height: u16, comptime pixel: TGACo
             while (h < half_height) : (w += 1) {
                 while (w < self.width) : (h += 1) {
                     while (b < self.bitsPerPixel) : (b += 1) {
-                        std.mem.swap(u8, &self.data[(w + h * self.width) * self.bitsPerPixel + b], &self.data.?[
+                        mem_swap(u8, &self.data[(w + h * self.width) * self.bitsPerPixel + b], &self.data.?[
                             (w + (self.height - 1 - h) * self.width) * self.bitsPerPixel + b
                         ]);
                     }
@@ -347,4 +353,8 @@ pub fn TGAImage(comptime width: u16, comptime height: u16, comptime pixel: TGACo
             }
         }
     };
+}
+
+pub fn tgaImage(comptime width: u16, comptime height: u16, comptime pixel: TGAColor) TGAImage(width, height, pixel) {
+    return TGAImage(width, height, pixel).init();
 }
