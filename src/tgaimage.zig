@@ -46,11 +46,11 @@ const TGAHeader = packed struct {
         writePackedInt(u16, arr_header[14..16], 0, header.height, endian);
         arr_header[16] = header.bitsperpixel;
         arr_header[17] = header.imageDescriptor;
-        debug_print("serialized header: ", .{});
-        for (arr_header) |byte| {
-            debug_print(" {b} ", .{byte});
-        }
-        debug_print("\n", .{});
+        // debug_print("serialized header: ", .{});
+        // for (arr_header) |byte| {
+        //     debug_print(" {b} ", .{byte});
+        // }
+        // debug_print("\n", .{});
         return arr_header;
     }
     fn deserialize(self: Self, serialized_header: [18]u8) void {
@@ -108,9 +108,9 @@ pub fn TGAImage(comptime width: u16, comptime height: u16, comptime pixel: TGACo
             var header = TGAHeader{};
 
             _ = reader.readAll(@as([*]u8, @ptrCast(&header))[0..18]) catch unreachable;
-            debug_print("'{s}', data_type_code: {d}\n", .{ @as([*]u8, @ptrCast(&header))[0..@sizeOf(TGAHeader)], header.dataTypeCode });
+            // debug_print("'{s}', data_type_code: {d}\n", .{ @as([*]u8, @ptrCast(&header))[0..@sizeOf(TGAHeader)], header.dataTypeCode });
 
-            debug_print("header width: {d}, height: {d}, bpp: {d}\n", .{ header.width, header.height, header.bitsperpixel >> 3 });
+            // debug_print("header width: {d}, height: {d}, bpp: {d}\n", .{ header.width, header.height, header.bitsperpixel >> 3 });
             self.width = header.width;
             self.height = header.height;
             self.bitsPerPixel = header.bitsperpixel >> 3;
@@ -261,9 +261,6 @@ pub fn TGAImage(comptime width: u16, comptime height: u16, comptime pixel: TGACo
                 while (currentPixel + runLength < nPixels and runLength < maxChunkLength) { //: (runLength += 1) {
                     var succ_eq = true;
                     var t: u32 = 0;
-                    if (self.data[currentByte] != 0 or self.data[currentByte + 1] != 0 or self.data[currentByte + 2] != 0) {
-                        debug_print("[B: {d}, G: {d}, R:{d}]\n", .{ self.data[currentByte], self.data[currentByte + 1], self.data[currentByte + 2] });
-                    }
 
                     while (succ_eq and t < self.bitsPerPixel) : (t += 1) {
                         succ_eq = (self.data[currentByte + t] == self.data[currentByte + t + self.bitsPerPixel]);
@@ -282,15 +279,13 @@ pub fn TGAImage(comptime width: u16, comptime height: u16, comptime pixel: TGACo
                     runLength += 1;
                 }
                 currentPixel += runLength;
-                debug_print("raw value: {}\n", .{raw});
                 if (raw) {
                     const rl = runLength - 1;
-                    debug_print("added 1 pixel!\n", .{});
+                    // debug_print("added 1 pixel!\n", .{});
                     writer.writeByte(rl) catch unreachable;
-                    debug_print("chunc: \n{any}\n", .{self.data[chunkStart .. chunkStart + runLength * self.bitsPerPixel]});
                     writer.writeAll(self.data[chunkStart .. chunkStart + runLength * self.bitsPerPixel]) catch unreachable;
                 } else {
-                    debug_print("added {d} bytes!\n", .{runLength});
+                    // debug_print("added {d} bytes!\n", .{runLength});
                     const rl = runLength + 127;
                     writer.writeByte(rl) catch unreachable;
                     writer.writeAll(self.data[chunkStart .. chunkStart + self.bitsPerPixel]) catch unreachable;

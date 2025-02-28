@@ -8,13 +8,21 @@ pub fn ImageRenderer(comptime ImageType: type, comptime ColorFormat: type) type 
             while (t < 1) : (t += 0.01) {
                 // const x: u32 = x0 + (x1 - x0) * t;
                 // const y: u32 = x0 + (y1 - y0) * t;
-                const x: u32 = x0 + @as(u32, @intFromFloat(@as(f32, @floatFromInt(x1 - x0)) * t));
-                const y: u32 = y0 + @as(u32, @intFromFloat(@as(f32, @floatFromInt(y1 - y0)) * t));
+                var x: u32 = 0;
+                var y: u32 = 0;
+                if (x0 < x1) {
+                    x = x0 + @as(u32, @intFromFloat(@as(f32, @floatFromInt(x1 - x0)) * t));
+                } else {
+                    x = x0 - @as(u32, @intFromFloat(@as(f32, @floatFromInt(x0 - x1)) * t));
+                }
+                if (y0 < y1) {
+                    y = y0 + @as(u32, @intFromFloat(@as(f32, @floatFromInt(y1 - y0)) * t));
+                } else {
+                    y = y0 - @as(u32, @intFromFloat(@as(f32, @floatFromInt(y0 - y1)) * t));
+                }
                 print("x: {}, y: {}\n", .{ x, y });
                 image.set(x, y, color);
             }
         }
     };
 }
-
-//pub fn imageRenderer(comptime image: anytype, color: anytype) ImageRenderer(@TypeOf(image), @TypeOf(color)) {}
